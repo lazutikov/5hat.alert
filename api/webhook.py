@@ -90,12 +90,17 @@ def process(update):
         text = msg["text"].strip()
         chat_id = msg["chat"]["id"]
         if text.startswith("/start"):
+            # Убираем команду /start из чата, оставляем только кнопку
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             tg("sendMessage", {
                 "chat_id": chat_id,
-                "text": "Нажмите «Как обстановка?», чтобы спросить всех.",
+                "text": "👇",
                 "reply_markup": MAIN_KB,
+                "disable_notification": True,
             })
         elif text == QUESTION:
+            # Убираем сообщение «Как обстановка?» от человека — в чате остаётся только опрос
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             header = f"❓ {QUESTION}\n{now_kyiv()}, спрашивает {full_name(msg['from'])}"
             tg("sendMessage", {
                 "chat_id": chat_id,
@@ -144,4 +149,3 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
         self.wfile.write("Бот работает".encode("utf-8"))
-
