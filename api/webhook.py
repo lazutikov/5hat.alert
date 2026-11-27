@@ -216,6 +216,10 @@ def choose(picked, idx):
 
 def process(update):
     msg = update.get("message")
+    # Прибираємо службові повідомлення «X приєднався / вийшов / додав Y»
+    if msg and ("new_chat_members" in msg or "left_chat_member" in msg):
+        tg("deleteMessage", {"chat_id": msg["chat"]["id"], "message_id": msg["message_id"]})
+        return
     if msg and "text" in msg:
         text = msg["text"].strip()
         chat_id = msg["chat"]["id"]
