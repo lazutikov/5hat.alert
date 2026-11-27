@@ -20,8 +20,10 @@ DELETE_AFTER = 60 * 60  # 1 час
 # «Как обстановка?» можно спрашивать не чаще, чем раз в столько секунд
 ASK_COOLDOWN = 5 * 60  # 5 минут
 
-QUESTION = "Как обстановка?"
-OPTIONS = ["Тихо", "Летает Физтех", "Летает БАМ", "Летает Бульвар"]
+QUESTION = "Як обстановка?"
+OPTIONS = ["Тихо", "Летить Фізтех", "Летить БАМ", "Летить Бульвар"]
+# Стара кнопка (російською) теж спрацює, поки у всіх не оновиться клавіатура
+QUESTION_ALIASES = {QUESTION, "Как обстановка?"}
 
 # Постоянная кнопка внизу экрана
 MAIN_KB = {
@@ -131,7 +133,7 @@ def now_kyiv():
 
 def full_name(user):
     name = " ".join(p for p in [user.get("first_name"), user.get("last_name")] if p)
-    return (name or "Без имени").replace(",", " ").replace("\n", " ").strip()
+    return (name or "Без імені").replace(",", " ").replace("\n", " ").strip()
 
 
 def render(header, answers):
@@ -176,7 +178,7 @@ def process(update):
                 "reply_markup": MAIN_KB,
                 "disable_notification": True,
             })
-        elif text == QUESTION:
+        elif text in QUESTION_ALIASES:
             # Убираем сообщение «Как обстановка?» от человека — в чате остаётся только опрос
             tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             wait = try_start_cooldown(chat_id)
@@ -184,7 +186,7 @@ def process(update):
                 mins = (wait + 59) // 60
                 note = tg("sendMessage", {
                     "chat_id": chat_id,
-                    "text": f"⏳ Спрашивали недавно. Следующий вопрос можно задать через {mins} мин.",
+                    "text": f"⏳ Нещодавно вже питали. Наступне питання можна поставити через {mins} хв.",
                     "disable_notification": True,
                 })
                 if note.get("ok"):
@@ -192,7 +194,7 @@ def process(update):
                     redis("SADD", "chats", chat_id)
                 cleanup(chat_id)
                 return
-            header = f"❓ {QUESTION}\n{now_kyiv()}, спрашивает {full_name(msg['from'])}"
+            header = f"❓ {QUESTION}\n{now_kyiv()}, питає {full_name(msg['from'])}"
             sent = tg("sendMessage", {
                 "chat_id": chat_id,
                 "text": render(header, {}),
@@ -222,7 +224,7 @@ def process(update):
             })
         tg("answerCallbackQuery", {
             "callback_query_id": call["id"],
-            "text": f"Вы ответили: {OPTIONS[idx]}",
+            "text": f"Ваша відповідь: {OPTIONS[idx]}",
         })
         cleanup(message["chat"]["id"])
 
@@ -246,4 +248,4 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот работает".encode("utf-8"))
+        self.wfile.write("Бот працює".encode("utf-8"))
