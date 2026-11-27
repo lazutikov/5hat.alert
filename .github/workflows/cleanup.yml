@@ -1,0 +1,12 @@
+name: cleanup
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS "https://5hatalert.vercel.app/api/webhook?cleanup=1"
