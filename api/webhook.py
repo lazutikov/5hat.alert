@@ -6,8 +6,21 @@
 
 import json
 import os
+import sys
 import time
+import uuid
 import urllib.request
+
+# Карта поки вимкнена. Щоб увімкнути — постав True (і поклади файли api/_mapdraw.py, api/_map/)
+USE_MAP = False
+
+render_map = None
+if USE_MAP:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from _mapdraw import render_map  # малює карту з зафарбованими зонами
+    except Exception as e:  # якщо карта не завантажилась — бот працює текстом
+        print("Map disabled:", e)
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 
@@ -58,11 +71,9 @@ MAIN_KB = {
 # Кнопки ответа под вопросом
 # «Тихо» — всегда зелёная кнопка, остальные — всегда красные.
 def answers_kb(answers=None):
-    # Тихо — зелена, місця — червоні, напрямки — сині
-    btns = []
-    for i, opt in enumerate(OPTIONS):
-        style = "success" if i == 0 else ("primary" if opt in YELLOW else "danger")
-        btns.append({"text": opt, "callback_data": f"v:{i}", "style": style})
+    # Без кольорової заливки (на iOS вона погано читається) — колір позначаємо значком
+    btns = [{"text": f"{mark_of(i)} {opt}", "callback_data": f"v:{i}"}
+            for i, opt in enumerate(OPTIONS)]
     red = [b for b, o in zip(btns, OPTIONS) if o not in YELLOW][1:]
     yellow = [b for b, o in zip(btns, OPTIONS) if o in YELLOW]
     # «Тихо» — окремим рядком, червоні — по два в рядку, сині — останнім рядком
@@ -81,6 +92,44 @@ def tg(method, data):
     except Exception as e:
         print("Telegram error:", method, e)
         return {}
+
+
+def tg_photo(method, data, photo_bytes):
+    """Запит до Telegram з картинкою (multipart/form-data)."""
+    boundary = uuid.uuid4().hex
+    body = b""
+    for k, v in data.items():
+        if isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").encode("utf-8")
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"map.jpg\"\r\n"
+             f"Content-Type: image/jpeg\r\n\r\n").encode("utf-8") + photo_bytes + b"\r\n"
+    body += f"--{boundary}--\r\n".encode("utf-8")
+    req = urllib.request.Request(API + method, data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=20).read())
+    except Exception as e:
+        print("Telegram error:", method, e)
+        return {}
+
+
+def counts_of(answers):
+    counts = {}
+    for picked in answers.values():
+        for i in picked:
+            counts[OPTIONS[i]] = counts.get(OPTIONS[i], 0) + 1
+    return counts
+
+
+def map_bytes(answers):
+    if render_map is None:
+        return None
+    try:
+        return render_map(counts_of(answers))
+    except Exception as e:
+        print("Map error:", e)
+        return None
 
 
 # ---------- Хранилище (Upstash Redis), чтобы помнить отправленные вопросы ----------
@@ -250,11 +299,21 @@ def process(update):
                 cleanup(chat_id)
                 return
             header = f"❓ {QUESTION}\n{now_kyiv()}, питає {full_name(msg['from'])}"
-            sent = tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": render(header, {}),
-                "reply_markup": answers_kb({}),
-            })
+            pic = map_bytes({})
+            if pic:
+                sent = tg_photo("sendPhoto", {
+                    "chat_id": chat_id,
+                    "caption": render(header, {}),
+                    "reply_markup": answers_kb({}),
+                }, pic)
+            else:
+                sent = {}
+            if not sent.get("ok"):
+                sent = tg("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": render(header, {}),
+                    "reply_markup": answers_kb({}),
+                })
             if sent.get("ok"):
                 remember_poll(chat_id, sent["result"]["message_id"])
         cleanup(chat_id)
@@ -264,7 +323,8 @@ def process(update):
     if call and call.get("data", "").startswith("v:") and "message" in call:
         idx = int(call["data"].split(":")[1])
         message = call["message"]
-        header, answers = parse(message.get("text", ""))
+        is_photo = "photo" in message
+        header, answers = parse(message.get("caption") or message.get("text") or "")
         name = full_name(call["from"])
 
         old = answers.get(name, set())
@@ -274,12 +334,29 @@ def process(update):
         else:
             answers.pop(name, None)
         if new != old:
-            tg("editMessageText", {
-                "chat_id": message["chat"]["id"],
-                "message_id": message["message_id"],
-                "text": render(header, answers),
-                "reply_markup": answers_kb(answers),
-            })
+            pic = map_bytes(answers) if is_photo else None
+            if pic:
+                tg_photo("editMessageMedia", {
+                    "chat_id": message["chat"]["id"],
+                    "message_id": message["message_id"],
+                    "media": {"type": "photo", "media": "attach://photo",
+                              "caption": render(header, answers)},
+                    "reply_markup": answers_kb(answers),
+                }, pic)
+            elif is_photo:
+                tg("editMessageCaption", {
+                    "chat_id": message["chat"]["id"],
+                    "message_id": message["message_id"],
+                    "caption": render(header, answers),
+                    "reply_markup": answers_kb(answers),
+                })
+            else:
+                tg("editMessageText", {
+                    "chat_id": message["chat"]["id"],
+                    "message_id": message["message_id"],
+                    "text": render(header, answers),
+                    "reply_markup": answers_kb(answers),
+                })
         tg("answerCallbackQuery", {
             "callback_query_id": call["id"],
             "text": ("Ваша відповідь: " + ", ".join(OPTIONS[i] for i in sorted(new))) if new
