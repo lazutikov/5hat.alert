@@ -30,7 +30,18 @@ OPTIONS = [
     "Гаражі «Нейтрон»",
     "Гаражі «Берізки»",
     "БАМ",
+    "На Жуки",
+    "На Олексіївку",
 ]
+
+# Напрямки, куди полетів (сині кнопки)
+YELLOW = {"На Жуки", "На Олексіївку"}
+
+
+def mark_of(i):
+    if i == 0:
+        return "🟢"
+    return "🔵" if OPTIONS[i] in YELLOW else "🔴"
 # Стара кнопка (російською) теж спрацює, поки у всіх не оновиться клавіатура
 QUESTION_ALIASES = {QUESTION, "Как обстановка?"}
 
@@ -44,11 +55,15 @@ MAIN_KB = {
 # Кнопки ответа под вопросом
 # «Тихо» — всегда зелёная кнопка, остальные — всегда красные.
 def answers_kb(answers=None):
-    btns = [{"text": opt, "callback_data": f"v:{i}",
-             "style": "success" if i == 0 else "danger"}
-            for i, opt in enumerate(OPTIONS)]
-    # «Тихо» — окремим рядком на всю ширину, місця — по два в рядку
-    rows = [[btns[0]]] + [btns[i:i + 2] for i in range(1, len(btns), 2)]
+    # Тихо — зелена, місця — червоні, напрямки — сині
+    btns = []
+    for i, opt in enumerate(OPTIONS):
+        style = "success" if i == 0 else ("primary" if opt in YELLOW else "danger")
+        btns.append({"text": opt, "callback_data": f"v:{i}", "style": style})
+    red = [b for b, o in zip(btns, OPTIONS) if o not in YELLOW][1:]
+    yellow = [b for b, o in zip(btns, OPTIONS) if o in YELLOW]
+    # «Тихо» — окремим рядком, червоні — по два в рядку, сині — останнім рядком
+    rows = [[btns[0]]] + [red[i:i + 2] for i in range(0, len(red), 2)] + [yellow]
     return {"inline_keyboard": rows}
 
 
@@ -147,13 +162,13 @@ def full_name(user):
 
 
 def render(header, answers):
-    """answers: {имя: номер_ответа}"""
+    """answers: {ім'я: {номери обраних варіантів}}"""
     blocks = [header]
     # Показуємо лише варіанти, на які хтось відповів — так повідомлення коротше
     for i, opt in enumerate(OPTIONS):
-        names = [n for n, idx in answers.items() if idx == i]
+        names = [n for n, picked in answers.items() if i in picked]
         if names:
-            mark = "🟢" if i == 0 else "🔴"
+            mark = mark_of(i)
             blocks.append(f"{mark} {opt} — {len(names)}\n" + ", ".join(names))
     if not answers:
         blocks.append("Поки ніхто не відповів")
@@ -168,15 +183,31 @@ def parse(text):
     for block in blocks[1:]:
         lines = block.split("\n")
         title = lines[0].rsplit(" — ", 1)[0]
-        for mark in ("🟢 ", "🔴 "):
+        for mark in ("🟢 ", "🔴 ", "🟡 ", "🔵 "):
             if title.startswith(mark):
                 title = title[len(mark):]
         if title in OPTIONS and len(lines) > 1:
             idx = OPTIONS.index(title)
             for name in lines[1].split(", "):
                 if name:
-                    answers[name] = idx
+                    answers.setdefault(name, set()).add(idx)
     return header, answers
+
+
+def choose(picked, idx):
+    """Одна людина: або «Тихо», або одне місце + один напрямок.
+    Повторне натискання на вже обраний варіант знімає його."""
+    picked = set(picked)
+    if idx in picked:
+        picked.discard(idx)
+        return picked
+    if idx == 0:
+        return {0}
+    picked.discard(0)
+    same_group = YELLOW if OPTIONS[idx] in YELLOW else set(OPTIONS[1:]) - YELLOW
+    picked = {i for i in picked if OPTIONS[i] not in same_group}
+    picked.add(idx)
+    return picked
 
 
 def process(update):
@@ -227,10 +258,13 @@ def process(update):
         header, answers = parse(message.get("text", ""))
         name = full_name(call["from"])
 
-        # Один человек — один ответ. Повторное нажатие меняет ответ.
-        if answers.get(name) != idx:
+        old = answers.get(name, set())
+        new = choose(old, idx)
+        if new:
+            answers[name] = new
+        else:
             answers.pop(name, None)
-            answers[name] = idx
+        if new != old:
             tg("editMessageText", {
                 "chat_id": message["chat"]["id"],
                 "message_id": message["message_id"],
@@ -239,7 +273,8 @@ def process(update):
             })
         tg("answerCallbackQuery", {
             "callback_query_id": call["id"],
-            "text": f"Ваша відповідь: {OPTIONS[idx]}",
+            "text": ("Ваша відповідь: " + ", ".join(OPTIONS[i] for i in sorted(new))) if new
+                    else "Відповідь знято",
         })
         cleanup(message["chat"]["id"])
 
