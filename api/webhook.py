@@ -15,7 +15,10 @@ TOKEN = os.environ.get("BOT_TOKEN", "")
 API = f"https://api.telegram.org/bot{TOKEN}/"
 
 # Старые вопросы удаляются через столько секунд после того, как задан новый вопрос
-DELETE_AFTER = 60 * 60  # 1 час
+DELETE_AFTER = 30 * 60  # 30 хвилин
+
+# Скільки питань максимум може бути в чаті одночасно
+MAX_POLLS = 2
 
 # «Как обстановка?» можно спрашивать не чаще, чем раз в столько секунд
 ASK_COOLDOWN = 5 * 60  # 5 минут
@@ -128,14 +131,15 @@ def cleanup(chat_id):
         return
     polls = [(rows[i], float(rows[i + 1])) for i in range(0, len(rows), 2)]  # по времени
     limit = time.time() - DELETE_AFTER
-    # Самый новый вопрос, заданный больше часа назад: всё, что раньше него, — удаляем
+    # Найновіше питання, поставлене більше 30 хв тому: усе, що раніше нього, — видаляємо
     cutoff = None
     for _, ts in polls:
         if ts <= limit:
             cutoff = ts
-    if cutoff is None:
-        return
-    old = [mid for mid, ts in polls if ts < cutoff]
+    old = [mid for mid, ts in polls if cutoff is not None and ts < cutoff]
+    # І в чаті не більше MAX_POLLS питань: найстаріші зайві — одразу
+    rest = [mid for mid, _ in polls if mid not in old]
+    old += rest[:-MAX_POLLS] if len(rest) > MAX_POLLS else []
     for mid in old:
         tg("deleteMessage", {"chat_id": chat_id, "message_id": int(mid)})
     if old:
@@ -236,8 +240,9 @@ def process(update):
                     "disable_notification": True,
                 })
                 if note.get("ok"):
-                    redis("ZADD", f"trash:{chat_id}", int(time.time()) + 60, note["result"]["message_id"])
-                    redis("SADD", "chats", chat_id)
+                    # Показуємо попередження 5 секунд і прибираємо
+                    time.sleep(5)
+                    tg("deleteMessage", {"chat_id": chat_id, "message_id": note["result"]["message_id"]})
                 cleanup(chat_id)
                 return
             header = f"❓ {QUESTION}\n{now_kyiv()}, питає {full_name(msg['from'])}"
