@@ -21,7 +21,16 @@ DELETE_AFTER = 60 * 60  # 1 час
 ASK_COOLDOWN = 5 * 60  # 5 минут
 
 QUESTION = "Як обстановка?"
-OPTIONS = ["Тихо", "Летить Фізтех", "Летить БАМ", "Летить Бульвар"]
+OPTIONS = [
+    "Тихо",
+    "Берізки + Фізтех",
+    "Бульвар + Школи",
+    "Церква + Шосе",
+    "Інститут + Сквер",
+    "Гаражі «Нейтрон»",
+    "Гаражі «Берізки»",
+    "БАМ",
+]
 # Стара кнопка (російською) теж спрацює, поки у всіх не оновиться клавіатура
 QUESTION_ALIASES = {QUESTION, "Как обстановка?"}
 
@@ -35,11 +44,12 @@ MAIN_KB = {
 # Кнопки ответа под вопросом
 # «Тихо» — всегда зелёная кнопка, остальные — всегда красные.
 def answers_kb(answers=None):
-    return {"inline_keyboard": [
-        [{"text": opt, "callback_data": f"v:{i}",
-          "style": "success" if i == 0 else "danger"}]
-        for i, opt in enumerate(OPTIONS)
-    ]}
+    btns = [{"text": opt, "callback_data": f"v:{i}",
+             "style": "success" if i == 0 else "danger"}
+            for i, opt in enumerate(OPTIONS)]
+    # «Тихо» — окремим рядком на всю ширину, місця — по два в рядку
+    rows = [[btns[0]]] + [btns[i:i + 2] for i in range(1, len(btns), 2)]
+    return {"inline_keyboard": rows}
 
 
 def tg(method, data):
@@ -139,12 +149,14 @@ def full_name(user):
 def render(header, answers):
     """answers: {имя: номер_ответа}"""
     blocks = [header]
+    # Показуємо лише варіанти, на які хтось відповів — так повідомлення коротше
     for i, opt in enumerate(OPTIONS):
         names = [n for n, idx in answers.items() if idx == i]
-        block = f"{opt} — {len(names)}"
         if names:
-            block += "\n" + ", ".join(names)
-        blocks.append(block)
+            mark = "🟢" if i == 0 else "🔴"
+            blocks.append(f"{mark} {opt} — {len(names)}\n" + ", ".join(names))
+    if not answers:
+        blocks.append("Поки ніхто не відповів")
     return "\n\n".join(blocks)
 
 
@@ -156,6 +168,9 @@ def parse(text):
     for block in blocks[1:]:
         lines = block.split("\n")
         title = lines[0].rsplit(" — ", 1)[0]
+        for mark in ("🟢 ", "🔴 "):
+            if title.startswith(mark):
+                title = title[len(mark):]
         if title in OPTIONS and len(lines) > 1:
             idx = OPTIONS.index(title)
             for name in lines[1].split(", "):
