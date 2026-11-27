@@ -36,7 +36,7 @@ MAX_POLLS = 2
 # «Как обстановка?» можно спрашивать не чаще, чем раз в столько секунд
 ASK_COOLDOWN = 5 * 60  # 5 минут
 
-QUESTION = "Як обстановка?"
+QUESTION = "Їду на район. Запитати про обстановку"
 OPTIONS = [
     "Тихо",
     "Берізки + Фізтех",
@@ -59,7 +59,7 @@ def mark_of(i):
         return "🟢"
     return "🔵" if OPTIONS[i] in YELLOW else "🔴"
 # Стара кнопка (російською) теж спрацює, поки у всіх не оновиться клавіатура
-QUESTION_ALIASES = {QUESTION, "Как обстановка?"}
+QUESTION_ALIASES = {QUESTION, "Іду на район. Запитати про обстановку", "Як обстановка?", "Как обстановка?"}
 
 # Постоянная кнопка внизу экрана
 MAIN_KB = {
@@ -277,7 +277,7 @@ def process(update):
             tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             tg("sendMessage", {
                 "chat_id": chat_id,
-                "text": "👇",
+                "text": ".",
                 "reply_markup": MAIN_KB,
                 "disable_notification": True,
             })
@@ -298,7 +298,7 @@ def process(update):
                     tg("deleteMessage", {"chat_id": chat_id, "message_id": note["result"]["message_id"]})
                 cleanup(chat_id)
                 return
-            header = f"❓ {QUESTION}\n{now_kyiv()}, питає {full_name(msg['from'])}"
+            header = f"{now_kyiv()} {full_name(msg['from'])} їде на район та питає про обстановку"
             pic = map_bytes({})
             if pic:
                 sent = tg_photo("sendPhoto", {
