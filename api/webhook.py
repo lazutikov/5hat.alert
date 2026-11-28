@@ -330,6 +330,26 @@ def refresh_button(chat_id):
             tg("deleteMessage", {"chat_id": chat_id, "message_id": int(old)})
 
 
+def is_admin(chat_id, msg):
+    """Адміни (і анонімні адміни від імені групи) можуть писати текст."""
+    if msg.get("sender_chat", {}).get("id") == chat_id:
+        return True
+    uid = msg.get("from", {}).get("id")
+    if not uid:
+        return False
+    cached = redis("GET", f"adm:{chat_id}:{uid}")
+    if cached is not None:
+        return cached == "1"
+    r = tg("getChatMember", {"chat_id": chat_id, "user_id": uid})
+    ok = r.get("result", {}).get("status") in ("creator", "administrator")
+    redis("SET", f"adm:{chat_id}:{uid}", "1" if ok else "0", "EX", 600)
+    return ok
+
+
+def is_bot_button(text):
+    return text in QUESTION_ALIASES or text == FPV_BUTTON or text.startswith("/start")
+
+
 def process(update):
     msg = update.get("message")
     # Прибираємо службові повідомлення «X приєднався / вийшов / додав Y»
@@ -342,6 +362,11 @@ def process(update):
                 if not user.get("is_bot"):
                     send_welcome(msg["chat"]["id"], user)
         return
+    # Учасникам писати текст не можна: усе, крім натискань кнопок, бот видаляє
+    if msg and msg.get("chat", {}).get("type") in ("group", "supergroup"):
+        if not is_bot_button((msg.get("text") or "").strip()) and not is_admin(msg["chat"]["id"], msg):
+            tg("deleteMessage", {"chat_id": msg["chat"]["id"], "message_id": msg["message_id"]})
+            return
     if msg and "text" in msg:
         text = msg["text"].strip()
         chat_id = msg["chat"]["id"]
