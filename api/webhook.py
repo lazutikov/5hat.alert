@@ -84,7 +84,41 @@ def answers_kb(answers=None):
     return {"inline_keyboard": rows}
 
 
+# ---------- Рубрики (теми) у групі ----------
+# Якщо в групі увімкнені теми, бот працює лише в тій темі, де написали /start.
+_thread_cache = {}
+
+
+GENERAL = "general"  # головна тема форуму («General», можна перейменувати)
+
+
+def bot_thread(chat_id):
+    """None — бот на всю групу; GENERAL — головна тема; число — номер теми."""
+    if chat_id not in _thread_cache:
+        v = redis("GET", f"thread:{chat_id}")
+        _thread_cache[chat_id] = GENERAL if v == GENERAL else (int(v) if v else None)
+    return _thread_cache[chat_id]
+
+
+def set_bot_thread(chat_id, thread_id):
+    _thread_cache[chat_id] = thread_id
+    if thread_id:
+        redis("SET", f"thread:{chat_id}", thread_id)
+    else:
+        redis("DEL", f"thread:{chat_id}")
+
+
+def with_thread(method, data):
+    """Усі повідомлення бота йдуть у його тему."""
+    if method.startswith("send") and "message_thread_id" not in data and "chat_id" in data:
+        tid = bot_thread(data["chat_id"])
+        if isinstance(tid, int):
+            data = {**data, "message_thread_id": tid}
+    return data
+
+
 def tg(method, data):
+    data = with_thread(method, data)
     req = urllib.request.Request(
         API + method,
         data=json.dumps(data).encode("utf-8"),
@@ -99,6 +133,7 @@ def tg(method, data):
 
 def tg_photo(method, data, photo_bytes):
     """Запит до Telegram з картинкою (multipart/form-data)."""
+    data = with_thread(method, data)
     boundary = uuid.uuid4().hex
     body = b""
     for k, v in data.items():
@@ -362,16 +397,29 @@ def process(update):
                 if not user.get("is_bot"):
                     send_welcome(msg["chat"]["id"], user)
         return
-    # Учасникам писати текст не можна: усе, крім натискань кнопок, бот видаляє
+    # Учасникам писати текст не можна: усе, крім натискань кнопок, бот видаляє.
+    # Якщо є теми — тільки в темі бота, в інших темах (наприклад «Чат») писати можна.
     if msg and msg.get("chat", {}).get("type") in ("group", "supergroup"):
-        if not is_bot_button((msg.get("text") or "").strip()) and not is_admin(msg["chat"]["id"], msg):
+        tid = bot_thread(msg["chat"]["id"])
+        here = msg.get("message_thread_id") if msg.get("is_topic_message") else GENERAL
+        in_bot_topic = (tid is None) or (here == tid)
+        if (msg.get("text") or "").startswith("/start"):
+            in_bot_topic = True
+        if in_bot_topic and not is_bot_button((msg.get("text") or "").strip()) and not is_admin(msg["chat"]["id"], msg):
             tg("deleteMessage", {"chat_id": msg["chat"]["id"], "message_id": msg["message_id"]})
             return
     if msg and "text" in msg:
         text = msg["text"].strip()
         chat_id = msg["chat"]["id"]
         if text.startswith("/start"):
-            # Убираем команду /start из чата, оставляем только кнопку
+            # Тема, де написали /start, стає темою бота (у звичайній групі — уся група)
+            if msg.get("is_topic_message"):
+                where = msg.get("message_thread_id")
+            elif msg["chat"].get("is_forum"):
+                where = GENERAL  # /start у головній темі форуму
+            else:
+                where = None
+            set_bot_thread(chat_id, where)
             tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             refresh_button(chat_id)
         elif text == FPV_BUTTON:
