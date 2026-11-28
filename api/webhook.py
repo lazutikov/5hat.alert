@@ -152,7 +152,7 @@ def redis(*cmd):
         return json.loads(urllib.request.urlopen(req, timeout=10).read()).get("result")
     except Exception as e:
         print("Redis error:", cmd[0], e)
-        return None
+        return f"ПОМИЛКА: {e}" if cmd[0] == "PING" else None
 
 
 def remember_poll(chat_id, message_id):
@@ -511,7 +511,20 @@ class handler(BaseHTTPRequestHandler):
         # Адрес .../api/webhook?cleanup=1 — почистить старые вопросы во всех чатах
         if "cleanup" in self.path:
             cleanup_all()
+        body = "Бот працює"
+        # Адреса .../api/webhook?debug=1 — перевірка бази (секретів не показує)
+        if "debug" in self.path:
+            names = sorted(k for k in os.environ if k.startswith(("KV_", "UPSTASH_")))
+            lines = [
+                f"Змінні бази у Vercel: {', '.join(names) or 'НЕМАЄ'}",
+                f"Адреса бази задана: {'так' if REDIS_URL else 'НІ'}",
+                f"Ключ бази заданий: {'так' if REDIS_TOKEN else 'НІ'}",
+                f"Відповідь бази на PING: {redis('PING')}",
+            ]
+            for chat in redis("SMEMBERS", "chats") or []:
+                lines.append(f"Чат {chat}: запам'ятовано питань — {redis('ZCARD', f'polls:{chat}')}")
+            body += "\n\n" + "\n".join(lines)
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот працює".encode("utf-8"))
+        self.wfile.write(body.encode("utf-8"))
