@@ -62,8 +62,11 @@ def mark_of(i):
 QUESTION_ALIASES = {QUESTION, "Іду на район. Запитати про обстановку", "Як обстановка?", "Как обстановка?"}
 
 # Постоянная кнопка внизу экрана
+# Друга кнопка внизу: повідомити, що чути ФПВ
+FPV_BUTTON = "ФПВ на районі"
+
 MAIN_KB = {
-    "keyboard": [[{"text": QUESTION}]],
+    "keyboard": [[{"text": QUESTION}, {"text": FPV_BUTTON}]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -171,7 +174,12 @@ def cleanup(chat_id):
     # Служебные сообщения («подождите…») удаляем, когда подошло их время
     trash = redis("ZRANGEBYSCORE", f"trash:{chat_id}", 0, int(time.time())) or []
     for mid in trash:
-        tg("deleteMessage", {"chat_id": chat_id, "message_id": int(mid)})
+        if str(mid).startswith("e:"):  # особисте (ефемерне) повідомлення: e:<user_id>:<id>
+            _, uid, eid = str(mid).split(":")
+            tg("deleteEphemeralMessage", {"chat_id": chat_id, "receiver_user_id": int(uid),
+                                          "ephemeral_message_id": int(eid)})
+        else:
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": int(mid)})
     if trash:
         redis("ZREM", f"trash:{chat_id}", *trash)
 
@@ -263,11 +271,76 @@ def choose(picked, idx):
     return picked
 
 
+WELCOME_TTL = 10 * 60  # привітання зникає само через 10 хвилин
+
+
+def welcome_text(name):
+    return (
+        f"Вітаємо, {name}!\n\n"
+        "Тут сусіди швидко повідомляють одне одному, чи літають ФПВ над нашим районом.\n\n"
+        "Щоб запитати про обстановку:\n"
+        f"Натисніть кнопку «{QUESTION}» внизу екрана. Якщо кнопки не видно, натисніть значок ⌨️ "
+        "біля поля вводу. Бот поставить питання всім у групі, а відповіді з'являться під ним.\n\n"
+        "Якщо чуєте ФПВ:\n"
+        f"Натисніть «{FPV_BUTTON}» і оберіть, де саме чути. Бот одразу попередить усю групу."
+    )
+
+
+def fpv_picker_kb(user_id):
+    """Вибір місця для «ФПВ на районі» — ті самі сектори, що й під питанням."""
+    places = [(i, o) for i, o in enumerate(OPTIONS) if i != 0 and o not in YELLOW]
+    btns = [{"text": f"🔴 {o}", "callback_data": f"f:{i}:{user_id}"} for i, o in places]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    rows.append([{"text": "Скасувати", "callback_data": f"f:x:{user_id}"}])
+    return {"inline_keyboard": rows}
+
+
+def send_private(chat_id, user_id, text, **extra):
+    """Повідомлення в групі, яке бачить лише одна людина («Бачите тільки ви»)."""
+    sent = tg("sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "ephemeral_message_parameters": {"receiver_user_id": user_id},
+        **extra,
+    })
+    if sent.get("ok"):
+        return sent["result"].get("ephemeral_message_id")
+    return None
+
+
+def send_welcome(chat_id, user):
+    eid = send_private(chat_id, user["id"], welcome_text(full_name(user)),
+                       reply_markup={"inline_keyboard": [[{"text": "Зрозуміло", "callback_data": "ok:"}]]})
+    if eid:
+        redis("ZADD", f"trash:{chat_id}", int(time.time()) + WELCOME_TTL, f"e:{user['id']}:{eid}")
+        redis("SADD", "chats", chat_id)
+
+
+def refresh_button(chat_id):
+    """Надсилає свіжу «.» з кнопкою внизу і прибирає попередню «.»"""
+    sent = tg("sendMessage", {
+        "chat_id": chat_id,
+        "text": ".",
+        "reply_markup": MAIN_KB,
+        "disable_notification": True,
+    })
+    if sent.get("ok"):
+        old = redis("GETSET", f"kbmsg:{chat_id}", sent["result"]["message_id"])
+        if old:
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": int(old)})
+
+
 def process(update):
     msg = update.get("message")
     # Прибираємо службові повідомлення «X приєднався / вийшов / додав Y»
     if msg and ("new_chat_members" in msg or "left_chat_member" in msg):
         tg("deleteMessage", {"chat_id": msg["chat"]["id"], "message_id": msg["message_id"]})
+        # Новим учасникам одразу показуємо кнопку
+        if "new_chat_members" in msg:
+            refresh_button(msg["chat"]["id"])
+            for user in msg["new_chat_members"]:
+                if not user.get("is_bot"):
+                    send_welcome(msg["chat"]["id"], user)
         return
     if msg and "text" in msg:
         text = msg["text"].strip()
@@ -275,27 +348,28 @@ def process(update):
         if text.startswith("/start"):
             # Убираем команду /start из чата, оставляем только кнопку
             tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
-            tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": ".",
-                "reply_markup": MAIN_KB,
-                "disable_notification": True,
-            })
+            refresh_button(chat_id)
+        elif text == FPV_BUTTON:
+            # Прибираємо натискання і показуємо вибір місця лише цій людині
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
+            uid = msg["from"]["id"]
+            ask = "Де чути ФПВ? Оберіть місце:"
+            if not send_private(chat_id, uid, ask, reply_markup=fpv_picker_kb(uid)):
+                # Якщо Telegram не прийняв особисте повідомлення — показуємо звичайне
+                tg("sendMessage", {"chat_id": chat_id, "text": f"{full_name(msg['from'])}, {ask[0].lower()}{ask[1:]}",
+                                   "reply_markup": fpv_picker_kb(uid), "disable_notification": True})
         elif text in QUESTION_ALIASES:
             # Убираем сообщение «Как обстановка?» от человека — в чате остаётся только опрос
             tg("deleteMessage", {"chat_id": chat_id, "message_id": msg["message_id"]})
             wait = try_start_cooldown(chat_id)
             if wait is not True:
                 mins = (wait + 59) // 60
-                note = tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": f"⏳ Нещодавно вже питали. Наступне питання можна поставити через {mins} хв.",
-                    "disable_notification": True,
-                })
-                if note.get("ok"):
-                    # Показуємо попередження 5 секунд і прибираємо
-                    time.sleep(5)
-                    tg("deleteMessage", {"chat_id": chat_id, "message_id": note["result"]["message_id"]})
+                # Попередження бачить лише той, хто натиснув
+                eid = send_private(chat_id, msg["from"]["id"],
+                                   f"⏳ Нещодавно вже питали. Наступне питання можна поставити через {mins} хв.")
+                if eid:
+                    redis("ZADD", f"trash:{chat_id}", int(time.time()) + 60, f"e:{msg['from']['id']}:{eid}")
+                    redis("SADD", "chats", chat_id)
                 cleanup(chat_id)
                 return
             header = f"{now_kyiv()} {full_name(msg['from'])} їде на район та питає про обстановку"
@@ -320,6 +394,37 @@ def process(update):
         return
 
     call = update.get("callback_query")
+    # Вибір місця після «ФПВ на районі»
+    if call and call.get("data", "").startswith("f:") and "message" in call:
+        _, choice, owner = call["data"].split(":")
+        if str(call["from"]["id"]) != owner:
+            tg("answerCallbackQuery", {"callback_query_id": call["id"],
+                                       "text": "Місце обирає той, хто чув ФПВ"})
+            return
+        m = call["message"]
+        chat_id = m["chat"]["id"]
+        if m.get("ephemeral_message_id"):
+            tg("deleteEphemeralMessage", {"chat_id": chat_id, "receiver_user_id": call["from"]["id"],
+                                          "ephemeral_message_id": m["ephemeral_message_id"]})
+        else:
+            tg("deleteMessage", {"chat_id": chat_id, "message_id": m["message_id"]})
+        if choice == "x":
+            tg("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Скасовано"})
+            return
+        place = OPTIONS[int(choice)]
+        tg("sendMessage", {"chat_id": chat_id, "text": f"‼️‼️‼️ ФПВ ({place}) {now_kyiv()}"})
+        tg("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Групу попереджено"})
+        return
+    # Кнопка «Зрозуміло» під привітанням
+    if call and call.get("data", "").startswith("ok:") and "message" in call:
+        m = call["message"]
+        if m.get("ephemeral_message_id"):
+            tg("deleteEphemeralMessage", {"chat_id": m["chat"]["id"], "receiver_user_id": call["from"]["id"],
+                                          "ephemeral_message_id": m["ephemeral_message_id"]})
+        else:
+            tg("deleteMessage", {"chat_id": m["chat"]["id"], "message_id": m["message_id"]})
+        tg("answerCallbackQuery", {"callback_query_id": call["id"]})
+        return
     if call and call.get("data", "").startswith("v:") and "message" in call:
         idx = int(call["data"].split(":")[1])
         message = call["message"]
