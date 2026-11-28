@@ -412,7 +412,7 @@ def process(update):
             tg("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Скасовано"})
             return
         place = OPTIONS[int(choice)]
-        tg("sendMessage", {"chat_id": chat_id, "text": f"‼️‼️‼️ ФПВ ({place}) {now_kyiv()}"})
+        tg("sendMessage", {"chat_id": chat_id, "text": f"‼️‼️‼️ ФПВ ({place}) {now_kyiv()}\nПовідомляє: {full_name(call['from'])}"})
         tg("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Групу попереджено"})
         return
     # Кнопка «Зрозуміло» під привітанням
